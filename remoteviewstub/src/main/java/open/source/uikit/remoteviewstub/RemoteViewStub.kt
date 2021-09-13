@@ -15,22 +15,20 @@ class RemoteViewStub @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : TextureView(context, attrs, defStyleAttr) {
 
+    private val client: RemoteViewStubManager.Client
+
     init {
         val array = context.obtainStyledAttributes(attrs, R.styleable.RemoteViewStub)
         val layoutId = array.getResourceId(R.styleable.RemoteViewStub_android_layout, 0)
-        if (layoutId != 0) {
-            val client = RemoteViewStubClient(this, layoutId)
-            RemoteViewStubManager.getInstance(context)
-                .openSession(client)
-            super.setSurfaceTextureListener(client)
-            super.getSurfaceTextureListener()
-        }
+        client = RemoteViewStubManager.getInstance(context)
+            .newClient(this, layoutId)
         array.recycle()
+        super.setSurfaceTextureListener(client.listener)
         super.setOpaque(false)
     }
 
     private val session: IRemoteViewStubSession?
-        get() = (super.getSurfaceTextureListener() as? RemoteViewStubClient)?.session
+        get() = client.session
 
     override fun getSurfaceTextureListener(): SurfaceTextureListener? {
         return null

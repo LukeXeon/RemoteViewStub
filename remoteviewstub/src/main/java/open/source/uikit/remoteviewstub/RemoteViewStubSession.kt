@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Canvas
 import android.os.*
+import android.util.AttributeSet
 import android.util.Log
 import android.view.*
 import android.widget.FrameLayout
@@ -12,6 +13,7 @@ import androidx.annotation.LayoutRes
 import androidx.annotation.MainThread
 import androidx.core.os.HandlerCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.android.HandlerDispatcher
 import kotlinx.coroutines.android.asCoroutineDispatcher
 
 internal class RemoteViewStubSession(
@@ -28,8 +30,65 @@ internal class RemoteViewStubSession(
     ViewTreeObserver.OnScrollChangedListener,
     IBinder.DeathRecipient {
 
-    private class SurfaceHolder(val surface: Surface) {
-        var isLockCanvas: Boolean = false
+    private class SurfaceOwner(
+        private val surface: Surface,
+        private val dispatcher: HandlerDispatcher
+    ) {
+        private var isLockCanvas: Boolean = false
+
+        suspend fun waitLockCanvas(): Canvas? {
+            return withContext(dispatcher.immediate) {
+                while (isLockCanvas) {
+                    if (surface.isValid) {
+                        yield()
+                    } else {
+                        return@withContext null
+                    }
+                }
+                val canvas = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    surface.lockHardwareCanvas()
+                } else {
+                    surface.lockCanvas(null)
+                }
+                isLockCanvas = true
+                return@withContext canvas
+            }
+        }
+
+        suspend fun unlockCanvasAndPost(canvas: Canvas) {
+            withContext(dispatcher.immediate) {
+                surface.unlockCanvasAndPost(canvas)
+                isLockCanvas = false
+            }
+        }
+    }
+
+    private class HostView(context: Context) : ViewGroup(context) {
+
+        val content: View?
+            get() {
+                return if (childCount > 0) {
+                    getChildAt(0)
+                } else {
+                    null
+                }
+            }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val content = content
+            if (content != null) {
+                content.measure(widthMeasureSpec, heightMeasureSpec)
+                setMeasuredDimension(content.measuredWidth, content.measuredHeight)
+            } else {
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            }
+        }
+
+        override fun dispatchDraw(canvas: Canvas?) {}
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            content?.layout(l, t, r, b)
+        }
     }
 
     private val window = PopupWindow()
@@ -41,10 +100,10 @@ internal class RemoteViewStubSession(
     private val renderThreadDispatcher = HandlerCompat
         .createAsync(renderThread.looper)
         .asCoroutineDispatcher()
-    private val hostView = FrameLayout(context)
+    private val hostView = HostView(context)
 
     @Volatile
-    private var surfaceHolder: SurfaceHolder? = null
+    private var surfaceOwner: SurfaceOwner? = null
         set(value) {
             field = value
             if (value != null) {
@@ -58,12 +117,14 @@ internal class RemoteViewStubSession(
         GlobalScope.launch(Dispatchers.Main) {
             window.width = width
             window.height = height
-            setSurfaceInternal(surface)
+            updateSurface(surface)
             window.isClippingEnabled = false
             window.contentView = hostView
             hostView.viewTreeObserver.addOnDrawListener(this@RemoteViewStubSession)
             hostView.viewTreeObserver.addOnScrollChangedListener(this@RemoteViewStubSession)
+            val start = SystemClock.uptimeMillis()
             LayoutInflater.from(context).inflate(layoutId, hostView, true)
+            Log.d(TAG, "inflate time=" + (SystemClock.uptimeMillis() - start))
             if (token != null) {
                 popupWindow(token)
             }
@@ -81,8 +142,12 @@ internal class RemoteViewStubSession(
     }
 
     @MainThread
-    private fun setSurfaceInternal(surface: Surface?) {
-        surfaceHolder = if (surface != null) SurfaceHolder(surface) else null
+    private fun updateSurface(surface: Surface?) {
+        surfaceOwner = if (surface != null)
+            SurfaceOwner(surface, renderThreadDispatcher)
+        else
+            null
+        hostView.invalidate()
     }
 
     override fun binderDied() {
@@ -93,28 +158,14 @@ internal class RemoteViewStubSession(
 
     override fun onDraw() {
         GlobalScope.launch(renderThreadDispatcher) {
-            val holder = surfaceHolder
-            if (holder != null && holder.surface.isValid) {
-                while (holder.isLockCanvas) {
-                    yield()
-                }
-                val canvas = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    holder.surface.lockHardwareCanvas()
-                } else {
-                    holder.surface.lockCanvas(null)
-                }
-                holder.isLockCanvas = true
-                withContext(Dispatchers.Main) {
-                    val start = SystemClock.uptimeMillis()
-                    try {
-                        hostView.draw(canvas)
-                    } finally {
-                        Log.d(TAG, "onPreDraw=" + (SystemClock.uptimeMillis() - start))
-                    }
-                }
-                holder.surface.unlockCanvasAndPost(canvas)
-                holder.isLockCanvas = false
+            val holder = surfaceOwner ?: return@launch
+            val canvas = holder.waitLockCanvas() ?: return@launch
+            withContext(Dispatchers.Main) {
+                val start = SystemClock.uptimeMillis()
+                hostView.content?.draw(canvas)
+                Log.d(TAG, "onDraw=" + (SystemClock.uptimeMillis() - start))
             }
+            holder.unlockCanvasAndPost(canvas)
         }
     }
 
@@ -141,7 +192,7 @@ internal class RemoteViewStubSession(
 
     override fun setSurface(surface: Surface?) {
         GlobalScope.launch(Dispatchers.Main) {
-            setSurfaceInternal(surface)
+            updateSurface(surface)
         }
     }
 
