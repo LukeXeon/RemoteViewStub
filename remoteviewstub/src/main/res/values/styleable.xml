@@ -1,0 +1,5 @@
+<resources>
+    <declare-styleable name="RemoteViewStub">
+        <attr name="android:layout" />
+    </declare-styleable>
+</resources>

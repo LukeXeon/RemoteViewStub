@@ -1,0 +1,3 @@
+include ':remoteviewstub'
+include ':app'
+rootProject.name = "RemoteViewStub"
