@@ -3,6 +3,7 @@ package open.source.uikit.remoteviewstub
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.SurfaceTexture
+import android.os.Binder
 import android.os.IBinder
 import android.util.AttributeSet
 import android.view.MotionEvent

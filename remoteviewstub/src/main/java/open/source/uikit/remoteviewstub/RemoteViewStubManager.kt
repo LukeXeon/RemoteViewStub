@@ -222,10 +222,13 @@ internal class RemoteViewStubManager(
                 }?.getOrNull()
             return@lazy { view, event ->
                 if (getViewRootImplMethod != null && dispatchUnhandledInputEventMethod != null) {
-                    dispatchUnhandledInputEventMethod.invoke(
-                        getViewRootImplMethod.invoke(view),
-                        event
-                    )
+                    val viewRootImpl = getViewRootImplMethod.invoke(view)
+                    if (viewRootImpl != null) {
+                        dispatchUnhandledInputEventMethod.invoke(
+                            viewRootImpl,
+                            event
+                        )
+                    }
                 }
             }
         }
